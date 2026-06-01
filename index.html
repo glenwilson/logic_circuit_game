@@ -51,6 +51,7 @@
   <span>| Gates: </span>
   <label><input id="incNAND" type="checkbox" checked /> NAND</label>
   <label><input id="incNOR" type="checkbox" checked /> NOR</label>
+  <label><input id="incXOR" type="checkbox" /> XOR</label>
   <button id="newBtn">New game</button>
   <button id="restartBtn">Restart (same circuit)</button>
 </div>
@@ -117,10 +118,10 @@ class NandNode extends Node {
   constructor(l,r){ super(); this.left=l; this.right=r; }
   evaluate(a){
     const lv=this.left.evaluate(a), rv=this.right.evaluate(a);
-    // NAND = NOT(AND); three-valued deduction
-    if (lv===false || rv===false) this.value=true;            // AND False => NAND True
-    else if (lv===true && rv===true) this.value=false;        // AND True => NAND False
-    else this.value=null;                                      // otherwise unknown
+    // NAND = NOT(AND)
+    if (lv===false || rv===false) this.value=true;
+    else if (lv===true && rv===true) this.value=false;
+    else this.value=null;
     return this.value;
   }
   toString(){ return `(${this.left.toString()} NAND ${this.right.toString()})`; }
@@ -130,27 +131,44 @@ class NorNode extends Node {
   constructor(l,r){ super(); this.left=l; this.right=r; }
   evaluate(a){
     const lv=this.left.evaluate(a), rv=this.right.evaluate(a);
-    // NOR = NOT(OR); three-valued deduction
-    if (lv===true || rv===true) this.value=false;             // OR True => NOR False
-    else if (lv===false && rv===false) this.value=true;       // OR False => NOR True
+    // NOR = NOT(OR)
+    if (lv===true || rv===true) this.value=false;
+    else if (lv===false && rv===false) this.value=true;
     else this.value=null;
     return this.value;
   }
   toString(){ return `(${this.left.toString()} NOR ${this.right.toString()})`; }
   walk(){ return [this, ...this.left.walk(), ...this.right.walk()]; }
 }
+class XorNode extends Node {
+  constructor(l,r){ super(); this.left=l; this.right=r; }
+  evaluate(a){
+    const lv=this.left.evaluate(a), rv=this.right.evaluate(a);
+    // XOR partial evaluation:
+    // If both known -> lv ^ rv
+    if (lv!==null && rv!==null) { this.value = Boolean(lv) !== Boolean(rv); return this.value; }
+    // If one known:
+    if (lv===true) { this.value = (rv===null) ? null : !rv; return this.value; }
+    if (lv===false){ this.value = (rv===null) ? null : rv;  return this.value; }
+    if (rv===true) { this.value = (lv===null) ? null : !lv; return this.value; }
+    if (rv===false){ this.value = (lv===null) ? null : lv;  return this.value; }
+    // both unknown
+    this.value = null; return this.value;
+  }
+  toString(){ return `(${this.left.toString()} XOR ${this.right.toString()})`; }
+  walk(){ return [this, ...this.left.walk(), ...this.right.walk()]; }
+}
 /* ----- Random formula with exactly K connectives ----- */
 function buildRandomFormula(K, syms, opts){
   if (K===0) return new VarNode(randChoice(syms));
-  const binaryPool = ['AND','OR', ...(opts.nand ? ['NAND'] : []), ...(opts.nor ? ['NOR'] : [])];
-  // Choose unary vs binary (slight bias to binary)
-  const useUnary = Math.random() < 0.3;
+  const binaryPool = ['AND','OR', ...(opts.nand ? ['NAND'] : []), ...(opts.nor ? ['NOR'] : []), ...(opts.xor ? ['XOR'] : [])];
+  const useUnary = Math.random() < 0.3; // slight bias toward binary
   if (useUnary){
     return new NotNode(buildRandomFormula(K-1, syms, opts));
   } else {
     const gate = randChoice(binaryPool);
-    const kLeft = Math.floor(Math.random()*(K));
-    const kRight = (K-1) - kLeft;
+    const kLeft = Math.floor(Math.random()*K);   // 0..K-1
+    const kRight = (K-1) - kLeft;                // ensures total connectives = K
     const left = buildRandomFormula(kLeft, syms, opts);
     const right = buildRandomFormula(kRight, syms, opts);
     switch (gate){
@@ -158,6 +176,7 @@ function buildRandomFormula(K, syms, opts){
       case 'OR': return new OrNode(left, right);
       case 'NAND': return new NandNode(left, right);
       case 'NOR': return new NorNode(left, right);
+      case 'XOR': return new XorNode(left, right);
     }
   }
 }
@@ -170,7 +189,7 @@ function computeLayout(node){
     const c=computeLayout(node.child);
     return {w:c.w, h:c.h+1};
   }
-  if (node instanceof AndNode || node instanceof OrNode || node instanceof NandNode || node instanceof NorNode){
+  if (node instanceof AndNode || node instanceof OrNode || node instanceof NandNode || node instanceof NorNode || node instanceof XorNode){
     const l=computeLayout(node.left), r=computeLayout(node.right);
     return {w:l.w+r.w, h:Math.max(l.h, r.h)+1};
   }
@@ -186,7 +205,7 @@ function assignPositions(node, x0, y0, wUnits){
     assignPositions(node.child, x0, y0+Y_SPACING, wUnits);
     node.cx = node.child.cx; node.cy = y0; return;
   }
-  if (node instanceof AndNode || node instanceof OrNode || node instanceof NandNode || node instanceof NorNode){
+  if (node instanceof AndNode || node instanceof OrNode || node instanceof NandNode || node instanceof NorNode || node instanceof XorNode){
     const lw=computeLayout(node.left).w, rw=computeLayout(node.right).w;
     assignPositions(node.left, x0, y0+Y_SPACING, lw);
     assignPositions(node.right, x0 + lw*X_SPACING, y0+Y_SPACING, rw);
@@ -213,6 +232,28 @@ function drawNode(node){
     node.shape = oval; node.text = text;
     return;
   }
+  if (node instanceof NotNode){
+    const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    rect.setAttribute('x', node.cx - GATE_W/2); rect.setAttribute('y', node.cy - GATE_H/2);
+    rect.setAttribute('width', GATE_W); rect.setAttribute('height', GATE_H);
+    rect.setAttribute('rx', 6); rect.setAttribute('class','outline');
+    svg.appendChild(rect);
+    const t = document.createElementNS('http://www.w3.org/2000/svg','text');
+    t.setAttribute('x', node.cx); t.setAttribute('y', node.cy+4);
+    t.setAttribute('class','gateText'); t.setAttribute('text-anchor','middle');
+    t.textContent = 'NOT';
+    svg.appendChild(t);
+    const child = node.child;
+    const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+    line.setAttribute('x1', node.cx); line.setAttribute('y1', node.cy + GATE_H/2);
+    line.setAttribute('x2', child.cx); line.setAttribute('y2', child.cy - (child instanceof VarNode ? VAR_H/2 : GATE_H/2));
+    line.setAttribute('class','wire');
+    svg.appendChild(line);
+    drawNode(child);
+    node.shape = rect; node.text = t;
+    return;
+  }
+  // Binary gates
   const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
   rect.setAttribute('x', node.cx - GATE_W/2); rect.setAttribute('y', node.cy - GATE_H/2);
   rect.setAttribute('width', GATE_W); rect.setAttribute('height', GATE_H);
@@ -224,9 +265,10 @@ function drawNode(node){
   t.textContent =
     node instanceof AndNode ? 'AND' :
     node instanceof OrNode ? 'OR' :
-    node instanceof NandNode ? 'NAND' : 'NOR';
+    node instanceof NandNode ? 'NAND' :
+    node instanceof NorNode ? 'NOR' : 'XOR';
   svg.appendChild(t);
-  const kids = node instanceof NotNode ? [node.child] : ('left' in node ? [node.left, node.right] : []);
+  const kids = [node.left, node.right];
   for (const child of kids){
     const line = document.createElementNS('http://www.w3.org/2000/svg','line');
     line.setAttribute('x1', node.cx); line.setAttribute('y1', node.cy + GATE_H/2);
@@ -324,11 +366,12 @@ const randomKEl = document.getElementById('randomK');
 const kConnsEl = document.getElementById('kConns');
 const incNANDEl = document.getElementById('incNAND');
 const incNOREl = document.getElementById('incNOR');
+const incXOREl = document.getElementById('incXOR');
 randomKEl.addEventListener('change', ()=>{ kConnsEl.disabled = randomKEl.checked; });
 document.getElementById('newBtn').addEventListener('click', ()=>{
   const N = +nVarsEl.value || 6;
   const K = randomKEl.checked ? (4 + Math.floor(Math.random()*7)) : Math.max(1, (+kConnsEl.value || 8));
-  const opts = { nand: incNANDEl.checked, nor: incNOREl.checked };
+  const opts = { nand: incNANDEl.checked, nor: incNOREl.checked, xor: incXOREl.checked };
   const syms = varSymbols(N);
   rootNode = buildRandomFormula(K, syms, opts);
   assignments = {};
