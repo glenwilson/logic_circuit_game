@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Logic Circuit Game (Web)</title>
+<style>
+  body { font-family: system-ui, Arial, sans-serif; margin: 0; }
+  header, .controls { padding: 12px 16px; }
+  header { background: #222; color: #fff; }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; border-bottom: 1px solid #ddd; }
+  .controls label { display: inline-flex; gap: 6px; align-items: center; }
+  .controls input[type="number"] { width: 80px; }
+  .info { padding: 8px 16px; display: flex; gap: 24px; flex-wrap: wrap; align-items: center; }
+  #formula { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; }
+  #turn { font-weight: 600; }
+  #board { padding: 8px 16px; }
+  #svgWrap { width: 100%; height: 75vh; border-top: 1px solid #ddd; }
+  #svgScroll { width: 100%; height: 100%; overflow: auto; background: #fff; }
+  svg { background: #fff; }
+  /* colors */
+  .true { fill: #6BCB77; }
+  .false { fill: #F56565; }
+  .unknown { fill: #DDDDDD; }
+  .varUnassigned { fill: #FFEAA7; }
+  .outline { stroke: #333; stroke-width: 2px; }
+  .wire { stroke: #222; stroke-width: 2px; fill: none; }
+  .gateText, .varText { font-weight: 700; fill: #111; user-select: none; }
+  .clickable { cursor: pointer; }
+  /* simple context prompt */
+  #prompt {
+    position: fixed; display: none; background: #fff; border: 1px solid #bbb; border-radius: 6px; box-shadow: 0 6px 16px rgba(0,0,0,.1);
+    padding: 8px; z-index: 1000;
+  }
+  #prompt button { margin: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <div>Logic Circuit Game (Web) — Player 1 aims True (green), Player 2 aims False (red)</div>
+</header>
+<div class="controls">
+  <label>N (variables):
+    <input id="nVars" type="number" min="1" max="26" value="6" />
+  </label>
+  <label>
+    <input id="randomK" type="checkbox" checked />
+    Random K in [4..10]
+  </label>
+  <label>K (connectives):
+    <input id="kConns" type="number" min="1" value="8" disabled />
+  </label>
+  <button id="newBtn">New game</button>
+  <button id="restartBtn">Restart (same circuit)</button>
+</div>
+<div class="info">
+  <div id="turn">Current turn: Player 1</div>
+  <div>Formula:</div>
+  <div id="formula"></div>
+</div>
+<div id="board">
+  <div id="svgWrap">
+    <div id="svgScroll"><svg id="circuit" width="1200" height="800"></svg></div>
+  </div>
+</div>
+<!-- simple two-button prompt near click -->
+<div id="prompt">
+  <div id="promptVar" style="margin-bottom:6px; font-weight:600;"></div>
+  <div style="text-align:center;">
+    <button id="setTrue">Set True</button>
+    <button id="setFalse">Set False</button>
+    <button id="cancel">Cancel</button>
+  </div>
+</div>
+<script>
+/* ----- Utility & Colors ----- */
+const COLORS = {
+  true: '#6BCB77',
+  false: '#F56565',
+  unknown: '#DDDDDD',
+  varUnassigned: '#FFEAA7'
+};
+function randChoice(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+function varSymbols(N){
+  const base = "PQRSTUVWXYZABCDEFGHIJ";
+  return base.slice(0, Math.max(1, Math.min(26, N))).split('');
+}
+/* ----- Node classes ----- */
+class Node {
+  constructor(){ this.value = null; this.cx = 0; this.cy = 0; this.shape = null; this.text = null; }
+  evaluate(assignments){ return null; }
+  walk(){ return [this]; }
+  toString(){ return "?"; }
+}
+class VarNode extends Node {
+  constructor(name){ super(); this.name = name; }
+  evaluate(assignments){ this.value = (this.name in assignments) ? assignments[this.name] : null; return this.value; }
+  toString(){ return this.name; }
+  walk(){ return [this]; }
+}
+class NotNode extends Node {
+  constructor(child){ super(); this.child = child; }
+  evaluate(assignments){
+    const c = this.child.evaluate(assignments);
+    this.value = (c === null) ? null : !c;
+    return this.value;
+  }
+  toString(){ return `(NOT ${this.child.toString()})`; }
+  walk(){ return [this, ...this.child.walk()]; }
+}
+class AndNode extends Node {
+  constructor(l, r){ super(); this.left = l; this.right = r; }
+  evaluate(assignments){
+    const lv = this.left.evaluate(assignments);
+    const rv = this.right.evaluate(assignments);
+    if (lv === false || rv === false) this.value = false;
+    else if (lv === true && rv === true) this.value = true;
+    else this.value = null;
+    return this.value;
+  }
+  toString(){ return `(${this.left.toString()} AND ${this.right.toString()})`; }
+  walk(){ return [this, ...this.left.walk(), ...this.right.walk()]; }
+}
+class OrNode extends Node {
+  constructor(l, r){ super(); this.left = l; this.right = r; }
+  evaluate(assignments){
+    const lv = this.left.evaluate(assignments);
+    const rv = this.right.evaluate(assignments);
+    if (lv === true || rv === true) this.value = true;
+    else if (lv === false && rv === false) this.value = false;
+    else this.value = null;
+    return this.value;
+  }
+  toString(){ return `(${this.left.toString()} OR ${this.right.toString()})`; }
+  walk(){ return [this, ...this.left.walk(), ...this.right.walk()]; }
+}
+/* ----- Random formula with exactly K connectives ----- */
+function buildRandomFormula(K, syms){
+  if (K === 0) return new VarNode(randChoice(syms));
+  const choice = randChoice(['NOT','AND','OR','AND','OR']); // bias to binary a bit
+  if (choice === 'NOT'){
+    return new NotNode(buildRandomFormula(K-1, syms));
+  } else {
+    const kLeft = Math.floor(Math.random()*(K));
+    const kRight = (K-1) - kLeft;
+    const left = buildRandomFormula(kLeft, syms);
+    const right = buildRandomFormula(kRight, syms);
+    return (choice === 'AND') ? new AndNode(left, right) : new OrNode(left, right);
+  }
+}
+/* ----- Layout (tree width/height and positions) ----- */
+const X_SPACING = 110, Y_SPACING = 110, MARGIN = 40;
+const GATE_W = 70, GATE_H = 40, VAR_W = 54, VAR_H = 36;
+function computeLayout(node){
+  if (node instanceof VarNode) return {w:1, h:1};
+  if (node instanceof NotNode){
+    const c = computeLayout(node.child);
+    return {w:c.w, h:c.h+1};
+  }
+  if (node instanceof AndNode || node instanceof OrNode){
+    const l = computeLayout(node.left);
+    const r = computeLayout(node.right);
+    return {w:l.w + r.w, h: Math.max(l.h, r.h)+1};
+  }
+  return {w:1, h:1};
+}
+function assignPositions(node, x0, y0, wUnits){
+  if (node instanceof VarNode){
+    node.cx = x0 + wUnits*X_SPACING/2;
+    node.cy = y0;
+    return;
+  }
+  if (node instanceof NotNode){
+    const c = computeLayout(node.child);
+    assignPositions(node.child, x0, y0 + Y_SPACING, wUnits);
+    node.cx = node.child.cx;
+    node.cy = y0;
+    return;
+  }
+  if (node instanceof AndNode || node instanceof OrNode){
+    const lw = computeLayout(node.left).w;
+    const rw = computeLayout(node.right).w;
+    assignPositions(node.left, x0, y0 + Y_SPACING, lw);
+    assignPositions(node.right, x0 + lw*X_SPACING, y0 + Y_SPACING, rw);
+    node.cx = (node.left.cx + node.right.cx)/2;
+    node.cy = y0;
+  }
+}
+/* ----- Drawing ----- */
+const svg = document.getElementById('circuit');
+function clearSVG(){ while(svg.lastChild) svg.removeChild(svg.lastChild); }
+function drawNode(node){
+  if (node instanceof VarNode){
+    const x0 = node.cx - VAR_W/2, y0 = node.cy - VAR_H/2;
+    const oval = document.createElementNS('http://www.w3.org/2000/svg','ellipse');
+    oval.setAttribute('cx', node.cx); oval.setAttribute('cy', node.cy);
+    oval.setAttribute('rx', VAR_W/2); oval.setAttribute('ry', VAR_H/2);
+    oval.setAttribute('class','outline clickable');
+    oval.dataset.var = node.name;
+    svg.appendChild(oval);
+    const text = document.createElementNS('http://www.w3.org/2000/svg','text');
+    text.setAttribute('x', node.cx); text.setAttribute('y', node.cy+4);
+    text.setAttribute('class','varText clickable'); text.setAttribute('text-anchor','middle');
+    text.textContent = node.name;
+    text.dataset.var = node.name;
+    svg.appendChild(text);
+    node.shape = oval; node.text = text;
+  } else if (node instanceof NotNode){
+    const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    rect.setAttribute('x', node.cx - GATE_W/2); rect.setAttribute('y', node.cy - GATE_H/2);
+    rect.setAttribute('width', GATE_W); rect.setAttribute('height', GATE_H);
+    rect.setAttribute('rx', 6);
+    rect.setAttribute('class','outline');
+    svg.appendChild(rect);
+    const t = document.createElementNS('http://www.w3.org/2000/svg','text');
+    t.setAttribute('x', node.cx); t.setAttribute('y', node.cy+4);
+    t.setAttribute('class','gateText'); t.setAttribute('text-anchor','middle');
+    t.textContent = 'NOT';
+    svg.appendChild(t);
+    // wire
+    const child = node.child;
+    const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+    line.setAttribute('x1', node.cx); line.setAttribute('y1', node.cy + GATE_H/2);
+    line.setAttribute('x2', child.cx); line.setAttribute('y2', child.cy - (child instanceof VarNode ? VAR_H/2 : GATE_H/2));
+    line.setAttribute('class','wire');
+    svg.appendChild(line);
+    drawNode(child);
+    node.shape = rect; node.text = t;
+  } else if (node instanceof AndNode || node instanceof OrNode){
+    const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    rect.setAttribute('x', node.cx - GATE_W/2); rect.setAttribute('y', node.cy - GATE_H/2);
+    rect.setAttribute('width', GATE_W); rect.setAttribute('height', GATE_H);
+    rect.setAttribute('rx', 6);
+    rect.setAttribute('class','outline');
+    svg.appendChild(rect);
+    const t = document.createElementNS('http://www.w3.org/2000/svg','text');
+    t.setAttribute('x', node.cx); t.setAttribute('y', node.cy+4);
+    t.setAttribute('class','gateText'); t.setAttribute('text-anchor','middle');
+    t.textContent = (node instanceof AndNode) ? 'AND' : 'OR';
+    svg.appendChild(t);
+    // wires
+    const kids = [node.left, node.right];
+    for (const child of kids){
+      const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+      line.setAttribute('x1', node.cx); line.setAttribute('y1', node.cy + GATE_H/2);
+      line.setAttribute('x2', child.cx); line.setAttribute('y2', child.cy - (child instanceof VarNode ? VAR_H/2 : GATE_H/2));
+      line.setAttribute('class','wire');
+      svg.appendChild(line);
+      drawNode(child);
+    }
+    node.shape = rect; node.text = t;
+  }
+}
+/* ----- Game state, evaluation and coloring ----- */
+let rootNode = null;
+let assignments = {}; // name -> true/false
+let currentPlayer = 1;
+let gameOver = false;
+function evaluateAndColor(){
+  if (!rootNode) return;
+  rootNode.evaluate(assignments);
+  // update node colors
+  for (const node of rootNode.walk()){
+    if (!node.shape) continue;
+    if (node instanceof VarNode){
+      if (node.name in assignments){
+        node.shape.setAttribute('fill', assignments[node.name] ? COLORS.true : COLORS.false);
+      } else {
+        node.shape.setAttribute('fill', COLORS.varUnassigned);
+      }
+      node.shape.setAttribute('class','outline clickable');
+      node.text.setAttribute('class','varText clickable');
+    } else {
+      const val = node.value;
+      const fill = (val === true) ? COLORS.true : (val === false ? COLORS.false : COLORS.unknown);
+      node.shape.setAttribute('fill', fill);
+    }
+  }
+  // turn and win
+  document.getElementById('turn').textContent = `Current turn: Player ${currentPlayer}`;
+  if (rootNode.value !== null && !gameOver){
+    gameOver = true;
+    const winner = rootNode.value ? 1 : 2;
+    setTimeout(()=>alert(`Result at output: ${rootNode.value ? 'True' : 'False'}\nPlayer ${winner} wins!`), 50);
+  }
+}
+function setVarValue(name, val){
+  if (gameOver) return;
+  if (name in assignments) return;
+  assignments[name] = val;
+  currentPlayer = (currentPlayer === 1) ? 2 : 1;
+  evaluateAndColor();
+}
+/* ----- Building and drawing the circuit ----- */
+function drawCircuit(){
+  clearSVG();
+  const dims = computeLayout(rootNode);
+  assignPositions(rootNode, MARGIN, MARGIN, dims.w);
+  const width = Math.max(800, MARGIN*2 + dims.w*X_SPACING);
+  const height = Math.max(600, MARGIN*2 + (dims.h+1)*Y_SPACING);
+  svg.setAttribute('width', width);
+  svg.setAttribute('height', height);
+  drawNode(rootNode);
+  attachVarClickHandlers();
+  evaluateAndColor();
+  document.getElementById('formula').textContent = rootNode.toString();
+}
+function attachVarClickHandlers(){
+  const scrollEl = document.getElementById('svgScroll');
+  svg.addEventListener('click', (e)=>{
+    const target = e.target;
+    if (!target || !target.dataset || !target.dataset.var) return;
+    const name = target.dataset.var;
+    if (gameOver || (name in assignments)) return;
+    // show small prompt near mouse
+    showPrompt(name, e.clientX, e.clientY);
+  });
+}
+const promptEl = document.getElementById('prompt');
+const promptVar = document.getElementById('promptVar');
+const setTrueBtn = document.getElementById('setTrue');
+const setFalseBtn = document.getElementById('setFalse');
+const cancelBtn = document.getElementById('cancel');
+let promptVarName = null;
+function showPrompt(varName, clientX, clientY){
+  promptVarName = varName;
+  promptVar.textContent = `Variable ${varName}`;
+  promptEl.style.left = `${clientX + 6}px`;
+  promptEl.style.top = `${clientY + 6}px`;
+  promptEl.style.display = 'block';
+}
+function hidePrompt(){ promptEl.style.display = 'none'; promptVarName = null; }
+setTrueBtn.onclick = ()=>{ if (promptVarName) setVarValue(promptVarName, true); hidePrompt(); };
+setFalseBtn.onclick = ()=>{ if (promptVarName) setVarValue(promptVarName, false); hidePrompt(); };
+cancelBtn.onclick = ()=> hidePrompt();
+document.addEventListener('click', (e)=>{
+  if (!promptEl.contains(e.target) && promptEl.style.display === 'block' && !(e.target.dataset && e.target.dataset.var)) {
+    hidePrompt();
+  }
+});
+/* ----- Controls ----- */
+const nVarsEl = document.getElementById('nVars');
+const randomKEl = document.getElementById('randomK');
+const kConnsEl = document.getElementById('kConns');
+randomKEl.addEventListener('change', ()=>{
+  kConnsEl.disabled = randomKEl.checked;
+});
+document.getElementById('newBtn').addEventListener('click', ()=>{
+  const N = +nVarsEl.value || 6;
+  const K = randomKEl.checked ? (4 + Math.floor(Math.random()*7)) : Math.max(1, (+kConnsEl.value || 8));
+  const syms = varSymbols(N);
+  rootNode = buildRandomFormula(K, syms);
+  assignments = {};
+  currentPlayer = 1;
+  gameOver = false;
+  drawCircuit();
+});
+document.getElementById('restartBtn').addEventListener('click', ()=>{
+  if (!rootNode) return;
+  assignments = {};
+  currentPlayer = 1;
+  gameOver = false;
+  evaluateAndColor();
+});
+/* ----- Start with a default game ----- */
+(function init(){
+  document.getElementById('newBtn').click();
+})();
+</script>
+</body>
+</html>
