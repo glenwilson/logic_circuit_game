@@ -18,7 +18,6 @@
   #svgWrap { width: 100%; height: 75vh; border-top: 1px solid #ddd; }
   #svgScroll { width: 100%; height: 100%; overflow: auto; background: #fff; }
   svg { background: #fff; }
-  /* colors */
   .true { fill: #6BCB77; }
   .false { fill: #F56565; }
   .unknown { fill: #DDDDDD; }
@@ -27,7 +26,6 @@
   .wire { stroke: #222; stroke-width: 2px; fill: none; }
   .gateText, .varText { font-weight: 700; fill: #111; user-select: none; }
   .clickable { cursor: pointer; }
-  /* simple context prompt */
   #prompt {
     position: fixed; display: none; background: #fff; border: 1px solid #bbb; border-radius: 6px; box-shadow: 0 6px 16px rgba(0,0,0,.1);
     padding: 8px; z-index: 1000;
@@ -50,6 +48,9 @@
   <label>K (connectives):
     <input id="kConns" type="number" min="1" value="8" disabled />
   </label>
+  <span>| Gates: </span>
+  <label><input id="incNAND" type="checkbox" checked /> NAND</label>
+  <label><input id="incNOR" type="checkbox" checked /> NOR</label>
   <button id="newBtn">New game</button>
   <button id="restartBtn">Restart (same circuit)</button>
 </div>
@@ -63,7 +64,6 @@
     <div id="svgScroll"><svg id="circuit" width="1200" height="800"></svg></div>
   </div>
 </div>
-<!-- simple two-button prompt near click -->
 <div id="prompt">
   <div id="promptVar" style="margin-bottom:6px; font-weight:600;"></div>
   <div style="text-align:center;">
@@ -86,81 +86,93 @@ function varSymbols(N){
   return base.slice(0, Math.max(1, Math.min(26, N))).split('');
 }
 /* ----- Node classes ----- */
-class Node {
-  constructor(){ this.value = null; this.cx = 0; this.cy = 0; this.shape = null; this.text = null; }
-  evaluate(assignments){ return null; }
-  walk(){ return [this]; }
-  toString(){ return "?"; }
-}
-class VarNode extends Node {
-  constructor(name){ super(); this.name = name; }
-  evaluate(assignments){ this.value = (this.name in assignments) ? assignments[this.name] : null; return this.value; }
-  toString(){ return this.name; }
-  walk(){ return [this]; }
-}
-class NotNode extends Node {
-  constructor(child){ super(); this.child = child; }
-  evaluate(assignments){
-    const c = this.child.evaluate(assignments);
-    this.value = (c === null) ? null : !c;
-    return this.value;
-  }
-  toString(){ return `(NOT ${this.child.toString()})`; }
-  walk(){ return [this, ...this.child.walk()]; }
-}
+class Node { constructor(){ this.value=null; this.cx=0; this.cy=0; this.shape=null; this.text=null; } evaluate(a){return null;} walk(){return [this];} toString(){return "?";} }
+class VarNode extends Node { constructor(name){ super(); this.name=name; } evaluate(a){ this.value=(this.name in a)?a[this.name]:null; return this.value; } toString(){ return this.name; } walk(){ return [this]; } }
+class NotNode extends Node { constructor(child){ super(); this.child=child; } evaluate(a){ const c=this.child.evaluate(a); this.value=(c===null)?null:!c; return this.value; } toString(){ return `(NOT ${this.child.toString()})`; } walk(){ return [this, ...this.child.walk()]; } }
 class AndNode extends Node {
-  constructor(l, r){ super(); this.left = l; this.right = r; }
-  evaluate(assignments){
-    const lv = this.left.evaluate(assignments);
-    const rv = this.right.evaluate(assignments);
-    if (lv === false || rv === false) this.value = false;
-    else if (lv === true && rv === true) this.value = true;
-    else this.value = null;
+  constructor(l,r){ super(); this.left=l; this.right=r; }
+  evaluate(a){
+    const lv=this.left.evaluate(a), rv=this.right.evaluate(a);
+    if (lv===false || rv===false) this.value=false;
+    else if (lv===true && rv===true) this.value=true;
+    else this.value=null;
     return this.value;
   }
   toString(){ return `(${this.left.toString()} AND ${this.right.toString()})`; }
   walk(){ return [this, ...this.left.walk(), ...this.right.walk()]; }
 }
 class OrNode extends Node {
-  constructor(l, r){ super(); this.left = l; this.right = r; }
-  evaluate(assignments){
-    const lv = this.left.evaluate(assignments);
-    const rv = this.right.evaluate(assignments);
-    if (lv === true || rv === true) this.value = true;
-    else if (lv === false && rv === false) this.value = false;
-    else this.value = null;
+  constructor(l,r){ super(); this.left=l; this.right=r; }
+  evaluate(a){
+    const lv=this.left.evaluate(a), rv=this.right.evaluate(a);
+    if (lv===true || rv===true) this.value=true;
+    else if (lv===false && rv===false) this.value=false;
+    else this.value=null;
     return this.value;
   }
   toString(){ return `(${this.left.toString()} OR ${this.right.toString()})`; }
   walk(){ return [this, ...this.left.walk(), ...this.right.walk()]; }
 }
+class NandNode extends Node {
+  constructor(l,r){ super(); this.left=l; this.right=r; }
+  evaluate(a){
+    const lv=this.left.evaluate(a), rv=this.right.evaluate(a);
+    // NAND = NOT(AND); three-valued deduction
+    if (lv===false || rv===false) this.value=true;            // AND False => NAND True
+    else if (lv===true && rv===true) this.value=false;        // AND True => NAND False
+    else this.value=null;                                      // otherwise unknown
+    return this.value;
+  }
+  toString(){ return `(${this.left.toString()} NAND ${this.right.toString()})`; }
+  walk(){ return [this, ...this.left.walk(), ...this.right.walk()]; }
+}
+class NorNode extends Node {
+  constructor(l,r){ super(); this.left=l; this.right=r; }
+  evaluate(a){
+    const lv=this.left.evaluate(a), rv=this.right.evaluate(a);
+    // NOR = NOT(OR); three-valued deduction
+    if (lv===true || rv===true) this.value=false;             // OR True => NOR False
+    else if (lv===false && rv===false) this.value=true;       // OR False => NOR True
+    else this.value=null;
+    return this.value;
+  }
+  toString(){ return `(${this.left.toString()} NOR ${this.right.toString()})`; }
+  walk(){ return [this, ...this.left.walk(), ...this.right.walk()]; }
+}
 /* ----- Random formula with exactly K connectives ----- */
-function buildRandomFormula(K, syms){
-  if (K === 0) return new VarNode(randChoice(syms));
-  const choice = randChoice(['NOT','AND','OR','AND','OR']); // bias to binary a bit
-  if (choice === 'NOT'){
-    return new NotNode(buildRandomFormula(K-1, syms));
+function buildRandomFormula(K, syms, opts){
+  if (K===0) return new VarNode(randChoice(syms));
+  const binaryPool = ['AND','OR', ...(opts.nand ? ['NAND'] : []), ...(opts.nor ? ['NOR'] : [])];
+  // Choose unary vs binary (slight bias to binary)
+  const useUnary = Math.random() < 0.3;
+  if (useUnary){
+    return new NotNode(buildRandomFormula(K-1, syms, opts));
   } else {
+    const gate = randChoice(binaryPool);
     const kLeft = Math.floor(Math.random()*(K));
     const kRight = (K-1) - kLeft;
-    const left = buildRandomFormula(kLeft, syms);
-    const right = buildRandomFormula(kRight, syms);
-    return (choice === 'AND') ? new AndNode(left, right) : new OrNode(left, right);
+    const left = buildRandomFormula(kLeft, syms, opts);
+    const right = buildRandomFormula(kRight, syms, opts);
+    switch (gate){
+      case 'AND': return new AndNode(left, right);
+      case 'OR': return new OrNode(left, right);
+      case 'NAND': return new NandNode(left, right);
+      case 'NOR': return new NorNode(left, right);
+    }
   }
 }
-/* ----- Layout (tree width/height and positions) ----- */
+/* ----- Layout ----- */
 const X_SPACING = 110, Y_SPACING = 110, MARGIN = 40;
 const GATE_W = 70, GATE_H = 40, VAR_W = 54, VAR_H = 36;
 function computeLayout(node){
   if (node instanceof VarNode) return {w:1, h:1};
   if (node instanceof NotNode){
-    const c = computeLayout(node.child);
+    const c=computeLayout(node.child);
     return {w:c.w, h:c.h+1};
   }
-  if (node instanceof AndNode || node instanceof OrNode){
-    const l = computeLayout(node.left);
-    const r = computeLayout(node.right);
-    return {w:l.w + r.w, h: Math.max(l.h, r.h)+1};
+  if (node instanceof AndNode || node instanceof OrNode || node instanceof NandNode || node instanceof NorNode){
+    const l=computeLayout(node.left), r=computeLayout(node.right);
+    return {w:l.w+r.w, h:Math.max(l.h, r.h)+1};
   }
   return {w:1, h:1};
 }
@@ -171,19 +183,14 @@ function assignPositions(node, x0, y0, wUnits){
     return;
   }
   if (node instanceof NotNode){
-    const c = computeLayout(node.child);
-    assignPositions(node.child, x0, y0 + Y_SPACING, wUnits);
-    node.cx = node.child.cx;
-    node.cy = y0;
-    return;
+    assignPositions(node.child, x0, y0+Y_SPACING, wUnits);
+    node.cx = node.child.cx; node.cy = y0; return;
   }
-  if (node instanceof AndNode || node instanceof OrNode){
-    const lw = computeLayout(node.left).w;
-    const rw = computeLayout(node.right).w;
-    assignPositions(node.left, x0, y0 + Y_SPACING, lw);
-    assignPositions(node.right, x0 + lw*X_SPACING, y0 + Y_SPACING, rw);
-    node.cx = (node.left.cx + node.right.cx)/2;
-    node.cy = y0;
+  if (node instanceof AndNode || node instanceof OrNode || node instanceof NandNode || node instanceof NorNode){
+    const lw=computeLayout(node.left).w, rw=computeLayout(node.right).w;
+    assignPositions(node.left, x0, y0+Y_SPACING, lw);
+    assignPositions(node.right, x0 + lw*X_SPACING, y0+Y_SPACING, rw);
+    node.cx = (node.left.cx + node.right.cx)/2; node.cy = y0;
   }
 }
 /* ----- Drawing ----- */
@@ -191,7 +198,6 @@ const svg = document.getElementById('circuit');
 function clearSVG(){ while(svg.lastChild) svg.removeChild(svg.lastChild); }
 function drawNode(node){
   if (node instanceof VarNode){
-    const x0 = node.cx - VAR_W/2, y0 = node.cy - VAR_H/2;
     const oval = document.createElementNS('http://www.w3.org/2000/svg','ellipse');
     oval.setAttribute('cx', node.cx); oval.setAttribute('cy', node.cy);
     oval.setAttribute('rx', VAR_W/2); oval.setAttribute('ry', VAR_H/2);
@@ -205,78 +211,53 @@ function drawNode(node){
     text.dataset.var = node.name;
     svg.appendChild(text);
     node.shape = oval; node.text = text;
-  } else if (node instanceof NotNode){
-    const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
-    rect.setAttribute('x', node.cx - GATE_W/2); rect.setAttribute('y', node.cy - GATE_H/2);
-    rect.setAttribute('width', GATE_W); rect.setAttribute('height', GATE_H);
-    rect.setAttribute('rx', 6);
-    rect.setAttribute('class','outline');
-    svg.appendChild(rect);
-    const t = document.createElementNS('http://www.w3.org/2000/svg','text');
-    t.setAttribute('x', node.cx); t.setAttribute('y', node.cy+4);
-    t.setAttribute('class','gateText'); t.setAttribute('text-anchor','middle');
-    t.textContent = 'NOT';
-    svg.appendChild(t);
-    // wire
-    const child = node.child;
+    return;
+  }
+  const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+  rect.setAttribute('x', node.cx - GATE_W/2); rect.setAttribute('y', node.cy - GATE_H/2);
+  rect.setAttribute('width', GATE_W); rect.setAttribute('height', GATE_H);
+  rect.setAttribute('rx', 6); rect.setAttribute('class','outline');
+  svg.appendChild(rect);
+  const t = document.createElementNS('http://www.w3.org/2000/svg','text');
+  t.setAttribute('x', node.cx); t.setAttribute('y', node.cy+4);
+  t.setAttribute('class','gateText'); t.setAttribute('text-anchor','middle');
+  t.textContent =
+    node instanceof AndNode ? 'AND' :
+    node instanceof OrNode ? 'OR' :
+    node instanceof NandNode ? 'NAND' : 'NOR';
+  svg.appendChild(t);
+  const kids = node instanceof NotNode ? [node.child] : ('left' in node ? [node.left, node.right] : []);
+  for (const child of kids){
     const line = document.createElementNS('http://www.w3.org/2000/svg','line');
     line.setAttribute('x1', node.cx); line.setAttribute('y1', node.cy + GATE_H/2);
     line.setAttribute('x2', child.cx); line.setAttribute('y2', child.cy - (child instanceof VarNode ? VAR_H/2 : GATE_H/2));
     line.setAttribute('class','wire');
     svg.appendChild(line);
     drawNode(child);
-    node.shape = rect; node.text = t;
-  } else if (node instanceof AndNode || node instanceof OrNode){
-    const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
-    rect.setAttribute('x', node.cx - GATE_W/2); rect.setAttribute('y', node.cy - GATE_H/2);
-    rect.setAttribute('width', GATE_W); rect.setAttribute('height', GATE_H);
-    rect.setAttribute('rx', 6);
-    rect.setAttribute('class','outline');
-    svg.appendChild(rect);
-    const t = document.createElementNS('http://www.w3.org/2000/svg','text');
-    t.setAttribute('x', node.cx); t.setAttribute('y', node.cy+4);
-    t.setAttribute('class','gateText'); t.setAttribute('text-anchor','middle');
-    t.textContent = (node instanceof AndNode) ? 'AND' : 'OR';
-    svg.appendChild(t);
-    // wires
-    const kids = [node.left, node.right];
-    for (const child of kids){
-      const line = document.createElementNS('http://www.w3.org/2000/svg','line');
-      line.setAttribute('x1', node.cx); line.setAttribute('y1', node.cy + GATE_H/2);
-      line.setAttribute('x2', child.cx); line.setAttribute('y2', child.cy - (child instanceof VarNode ? VAR_H/2 : GATE_H/2));
-      line.setAttribute('class','wire');
-      svg.appendChild(line);
-      drawNode(child);
-    }
-    node.shape = rect; node.text = t;
   }
+  node.shape = rect; node.text = t;
 }
-/* ----- Game state, evaluation and coloring ----- */
+/* ----- Game state and evaluation ----- */
 let rootNode = null;
-let assignments = {}; // name -> true/false
+let assignments = {}; // name -> boolean
 let currentPlayer = 1;
 let gameOver = false;
 function evaluateAndColor(){
   if (!rootNode) return;
   rootNode.evaluate(assignments);
-  // update node colors
   for (const node of rootNode.walk()){
     if (!node.shape) continue;
     if (node instanceof VarNode){
-      if (node.name in assignments){
-        node.shape.setAttribute('fill', assignments[node.name] ? COLORS.true : COLORS.false);
-      } else {
-        node.shape.setAttribute('fill', COLORS.varUnassigned);
-      }
+      const fill = (node.name in assignments) ? (assignments[node.name] ? COLORS.true : COLORS.false) : COLORS.varUnassigned;
+      node.shape.setAttribute('fill', fill);
       node.shape.setAttribute('class','outline clickable');
       node.text.setAttribute('class','varText clickable');
     } else {
       const val = node.value;
-      const fill = (val === true) ? COLORS.true : (val === false ? COLORS.false : COLORS.unknown);
+      const fill = (val===true) ? COLORS.true : (val===false ? COLORS.false : COLORS.unknown);
       node.shape.setAttribute('fill', fill);
     }
   }
-  // turn and win
   document.getElementById('turn').textContent = `Current turn: Player ${currentPlayer}`;
   if (rootNode.value !== null && !gameOver){
     gameOver = true;
@@ -291,7 +272,7 @@ function setVarValue(name, val){
   currentPlayer = (currentPlayer === 1) ? 2 : 1;
   evaluateAndColor();
 }
-/* ----- Building and drawing the circuit ----- */
+/* ----- Build & draw circuit ----- */
 function drawCircuit(){
   clearSVG();
   const dims = computeLayout(rootNode);
@@ -306,16 +287,15 @@ function drawCircuit(){
   document.getElementById('formula').textContent = rootNode.toString();
 }
 function attachVarClickHandlers(){
-  const scrollEl = document.getElementById('svgScroll');
   svg.addEventListener('click', (e)=>{
     const target = e.target;
     if (!target || !target.dataset || !target.dataset.var) return;
     const name = target.dataset.var;
     if (gameOver || (name in assignments)) return;
-    // show small prompt near mouse
     showPrompt(name, e.clientX, e.clientY);
   });
 }
+/* ----- Click prompt ----- */
 const promptEl = document.getElementById('prompt');
 const promptVar = document.getElementById('promptVar');
 const setTrueBtn = document.getElementById('setTrue');
@@ -342,14 +322,15 @@ document.addEventListener('click', (e)=>{
 const nVarsEl = document.getElementById('nVars');
 const randomKEl = document.getElementById('randomK');
 const kConnsEl = document.getElementById('kConns');
-randomKEl.addEventListener('change', ()=>{
-  kConnsEl.disabled = randomKEl.checked;
-});
+const incNANDEl = document.getElementById('incNAND');
+const incNOREl = document.getElementById('incNOR');
+randomKEl.addEventListener('change', ()=>{ kConnsEl.disabled = randomKEl.checked; });
 document.getElementById('newBtn').addEventListener('click', ()=>{
   const N = +nVarsEl.value || 6;
   const K = randomKEl.checked ? (4 + Math.floor(Math.random()*7)) : Math.max(1, (+kConnsEl.value || 8));
+  const opts = { nand: incNANDEl.checked, nor: incNOREl.checked };
   const syms = varSymbols(N);
-  rootNode = buildRandomFormula(K, syms);
+  rootNode = buildRandomFormula(K, syms, opts);
   assignments = {};
   currentPlayer = 1;
   gameOver = false;
@@ -363,9 +344,7 @@ document.getElementById('restartBtn').addEventListener('click', ()=>{
   evaluateAndColor();
 });
 /* ----- Start with a default game ----- */
-(function init(){
-  document.getElementById('newBtn').click();
-})();
+(function init(){ document.getElementById('newBtn').click(); })();
 </script>
 </body>
 </html>
